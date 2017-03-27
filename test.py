@@ -1,8 +1,10 @@
+import time
 import warnings
 import itertools
 from abc import ABCMeta, abstractmethod
 
 import numpy as np
+from hyperopt import hp, fmin, tpe
 
 
 def add_constraints(constraints):
@@ -86,6 +88,14 @@ class BasePolicyFamily(metaclass=ABCMeta):
         L = (np.log(self.c) - np.log(z_u/z_g/self.R)) @ self.c
         J = -((jac_z_u.T/z_u).T - jac_z_g/z_g).T @ self.c
         return L, J
+
+    def loss_sim(self, params, constraints=None, samples=1000):
+        sim = self.sample_constrained(
+            self.normalize_params(params), samples, constraints)
+        q = np.unique(sim, return_counts=True)[1].astype(float)
+        q /= np.sum(q)
+        c = self.c / np.sum(self.c)
+        return np.sum(c*np.log(c/q))
 
     def build_selector(self, params, constraints=None):
         """Builds a function accepting no arguments that returns a valid selection.
@@ -195,3 +205,46 @@ def optimal_params(policy_family, start=None,
     if verbose:
         print('Converged to desired accuracy :)')
     return params_old
+
+
+def optimal_params_sim(policy_family, start=None,
+                       constraints=None, step=1e-2, eps=1e-3,
+                       max_iter=10000, verbose=0):
+    """Apply gradient descent to find the optimal policy"""
+    if start is None:
+        start = policy_family.params_point()
+
+    def loss(params):
+        return policy_family.loss_sim(params, constraints)
+
+    best = fmin(loss,
+                space=[
+                    hp.uniform(str(i), 0, 1) for i in range(len(start))],
+                algo=tpe.suggest,
+                max_evals=1000,
+                verbose=True)
+    opt = np.array([best[i] for i in sorted(best.keys())])
+    return opt / np.sum(opt)
+
+
+cap = np.array([10, 8, 6, 10, 8, 6, 10, 8, 6])
+R = 2
+pol = SimplePolicyFamily(cap, R)
+
+t_jac = time.time()
+opt_jac = optimal_params(pol, constraints=None)
+t_jac = time.time() - t_jac
+
+t_sim = time.time()
+opt_sim = optimal_params_sim(pol, constraints=None)
+t_sim = time.time() - t_sim
+
+print('Time using jacobian  : {0:>5.2f}s'.format(t_jac))
+print('Time using simulation: {0:>5.2f}s'.format(t_sim))
+print()
+print('Comparing results between exact optimizacion (jac) vs black box (sim)')
+print()
+print('jac  sim')
+print('--------')
+for i in range(opt_jac.shape[0]):
+    print('{0:3.2f} {1:3.2f}'.format(opt_jac[i], opt_sim[i]))
